@@ -6,3 +6,4 @@ xray
 v2ray
 v2rayn
 goland
+pycharm-professional
