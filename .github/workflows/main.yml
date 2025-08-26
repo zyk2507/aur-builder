@@ -76,16 +76,8 @@ jobs:
           name: ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
-
-      - name: Upload single archive to Release (no split)
-        if: env.is_split == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            upload.7z
-
-            - name: Upload multi-volume archives to Release (only if >1.9GB)
+      
+      - name: Upload multi-volume archives to Release (only if >1.9GB)
         if: env.is_split == 'true'
         uses: softprops/action-gh-release@v2
         with:
