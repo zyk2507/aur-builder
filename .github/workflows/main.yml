@@ -1,4 +1,4 @@
-name: Build AUR in Docker and Archive Upload
+name: Build AUR in Docker, Archive & Release
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
     - cron: '30 18 * * *'
 
 permissions:
-  contents: write  # 创建 Release 并上传资产需要
+  contents: write  # 创建/更新 Release 与上传资产
 
 jobs:
   build-aur:
@@ -19,7 +19,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx (optional)
+      # 可选：更快的构建缓存
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
@@ -28,28 +29,30 @@ jobs:
 
       - name: Run AUR builder container
         run: |
-          # 将仓库内的 upload/ 和 packages/ 作为卷挂载到容器
-          # 其中 /opt/upload 会被容器中的脚本 chmod 777
+          # 将仓库内的 upload/ 与 packages/ 挂载到容器
           docker run --rm \
             -v "${{ github.workspace }}/upload:/opt/upload" \
             -v "${{ github.workspace }}/packages:/opt/packages" \
             aur-builder:latest
 
-      - name: Install archiver (7z)
+      - name: Install 7-Zip
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
-      - name: Compress upload/ (single archive first)
+      - name: Compress upload/ (single first, then maybe multi-volume)
+        shell: bash
         working-directory: ${{ github.workspace }}
         run: |
+          set -euo pipefail
+
           if [ ! -d "upload" ]; then
             echo "ERROR: upload/ not found"
             exit 1
           fi
 
-          # 先生成单一 7z 包
-          7z a -mx=9 -mmt=on "upload.7z" ./upload/*
+          # 先生成单一 7z 包；打整个目录，保证即便为空也能打包成功
+          7z a -mx=9 -mmt=on "upload.7z" "./upload" >/dev/null
 
           BYTES=$(stat -c%s "upload.7z")
           echo "Packed size (bytes): ${BYTES}"
@@ -58,35 +61,51 @@ jobs:
           THRESHOLD=$((1900 * 1024 * 1024))
 
           if [ "${BYTES}" -gt "${THRESHOLD}" ]; then
-            echo "is_split=true" >> $GITHUB_ENV
-            # 删除单包，改用原生 7z 多卷重新打包（每卷 1900MB）
+            echo "is_split=true" >> "$GITHUB_ENV"
+            # 改用原生 7z 多卷（每卷 1900MB）
             rm -f upload.7z
-            7z a -mx=9 -mmt=on -v1900m "upload.7z" ./upload/*
-            # 结果会是 upload.7z.001, upload.7z.002, ...
+            7z a -mx=9 -mmt=on -v1900m "upload.7z" "./upload" >/dev/null
+            # 结果：upload.7z.001, upload.7z.002, ...
+            echo "RELEASE_FILES=upload.7z.*" >> "$GITHUB_ENV"
           else
-            echo "is_split=false" >> $GITHUB_ENV
+            echo "is_split=false" >> "$GITHUB_ENV"
+            echo "RELEASE_FILES=upload.7z" >> "$GITHUB_ENV"
           fi
 
       - name: Prepare release tag (Asia/Singapore -> mmddyyyy-hh-mm-ss)
         id: prep_tag
+        shell: bash
         run: |
           TZ=Asia/Singapore
           VERSION=$(TZ=$TZ date '+%m%d%Y-%H-%M-%S')
-          echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$VERSION" >> "$GITHUB_ENV"
           echo "Release tag: $VERSION"
 
-      - name: Create GitHub Release
+      - name: Create/Update Release & Upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}
+          files: ${{ env.RELEASE_FILES }}
           draft: false
           prerelease: false
-      
-      - name: Upload multi-volume archives to Release (only if >1.9GB)
-        if: env.is_split == 'true'
-        uses: softprops/action-gh-release@v2
+          make_latest: true
+          # 若你担心通配未命中导致失败，可设为 false
+          fail_on_unmatched_files: true
+
+      # 可选：将同一输出作为工作流 Artifact 保存，便于在 Actions 页直接下载
+      - name: Upload artifact (single)
+        if: env.is_split == 'false'
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            upload.7z.*
+          name: upload-archive
+          path: upload.7z
+          compression-level: 0  # 已压缩，不再二次压缩
+
+      - name: Upload artifact (multi-volume)
+        if: env.is_split == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upload-archive-split
+          path: upload.7z.*
+          compression-level: 0
