@@ -34,70 +34,61 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
-      - name: Compress upload/ with maximum ratio
+      - name: Compress upload/ (single archive first)
         working-directory: ${{ github.workspace }}
         run: |
-          # 确保有内容（若空则仍会生成空壳压缩包）
           if [ ! -d "upload" ]; then
             echo "ERROR: upload/ not found"
             exit 1
           fi
 
-          # 统一输出名
-          ARCHIVE_NAME="upload.7z"
+          # 先生成单一 7z 包
+          7z a -mx=9 -mmt=on "upload.7z" ./upload/*
 
-          # 最大压缩（-mx=9），多线程（-mmt=on）
-          # 将 upload/ 目录的内容打包到 upload.7z
-          7z a -mx=9 -mmt=on "${ARCHIVE_NAME}" ./upload/*
-
-          # 显示打包后大小（字节）
-          BYTES=$(stat -c%s "${ARCHIVE_NAME}")
+          BYTES=$(stat -c%s "upload.7z")
           echo "Packed size (bytes): ${BYTES}"
 
-          # 阈值：1.9GB = 1900 * 1024 * 1024 字节
+          # 阈值 1.9GB
           THRESHOLD=$((1900 * 1024 * 1024))
 
           if [ "${BYTES}" -gt "${THRESHOLD}" ]; then
-            echo "archive_needs_split=true" >> $GITHUB_ENV
+            echo "is_split=true" >> $GITHUB_ENV
+            # 删除单包，改用原生 7z 多卷重新打包（每卷 1900MB）
+            rm -f upload.7z
+            7z a -mx=9 -mmt=on -v1900m "upload.7z" ./upload/*
+            # 结果会是 upload.7z.001, upload.7z.002, ...
           else
-            echo "archive_needs_split=false" >> $GITHUB_ENV
+            echo "is_split=false" >> $GITHUB_ENV
           fi
 
-      - name: Split archive if > 1.9GB
-        if: env.archive_needs_split == 'true'
+      - name: Prepare release tag (Asia/Singapore -> mmddyyyy-hh-mm-ss)
+        id: prep_tag
         run: |
-          # 基于已生成的 upload.7z 进行分卷（每卷 1900MB）
-          # 生成文件：upload.7z.part-000, upload.7z.part-001, ...
-          split -b 1900m -d -a 3 upload.7z upload.7z.part-
-          # 可选：保留原始整包或删除整包以节省空间
-          # rm -f upload.7z
+          TZ=Asia/Singapore
+          VERSION=$(TZ=$TZ date '+%m%d%Y-%H-%M-%S')
+          echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
+          echo "Release tag: $VERSION"
 
-      - name: List outputs
-        run: |
-          ls -lah
-          if [ -f "upload.7z" ]; then
-            echo "Single archive present: upload.7z"
-          fi
-          if ls upload.7z.part-* >/dev/null 2>&1; then
-            echo "Split parts present:"
-            ls -lah upload.7z.part-*
-          fi
-
-      - name: Upload single archive artifact
-        if: env.archive_needs_split == 'false'
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: upload-archive
-          path: upload.7z
-          if-no-files-found: error
-          compression-level: 0  # 已经是最大压缩，不再二次压缩
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          draft: false
+          prerelease: false
 
-      - name: Upload split archive artifacts
-        if: env.archive_needs_split == 'true'
-        uses: actions/upload-artifact@v4
+      - name: Upload single archive to Release (no split)
+        if: env.is_split == 'false'
+        uses: softprops/action-gh-release@v2
         with:
-          name: upload-archive-split
-          path: |
-            upload.7z.part-*
-          if-no-files-found: error
-          compression-level: 0  # 分卷文件无需再压缩
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            upload.7z
+
+            - name: Upload multi-volume archives to Release (only if >1.9GB)
+        if: env.is_split == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            upload.7z.*
