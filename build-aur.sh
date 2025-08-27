@@ -52,7 +52,6 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 done < "$PKG_LIST"
 
 
-log "扫描自写包目录（递归查找 PKGBUILD）: $PACKAGES_ROOT"
 declare -A _seen_dirs
 # 使用 -print0 读取 null 分隔，防止空格/特殊字符路径问题
 while IFS= read -r -d '' pkgb; do
