@@ -4,6 +4,7 @@ set -euo pipefail
 UPLOAD_DIR="/opt/upload"
 PKG_LIST="/opt/packages/pkgs.txt"
 BUILD_ROOT="/build"
+PACKAGES_ROOT="/opt/packages"
 
 # 确保目录存在并设置权限
 mkdir -p "$UPLOAD_DIR" "$BUILD_ROOT"
