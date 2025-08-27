@@ -1,9 +1,6 @@
-# Maintainer: everyx <lunt.luo@gmail.com>
-# Contributor: BGME <i@bgme.me>
-
 pkgname=sing-box-git
 _pkgname=sing-box
-pkgver=1.12.3.r27.gc90afbe9
+pkgver=1.13.git
 pkgrel=1
 
 pkgdesc='The universal proxy platform (git version).'
