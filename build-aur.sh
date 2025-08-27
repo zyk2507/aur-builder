@@ -50,6 +50,39 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   fi
 done < "$PKG_LIST"
 
+
+log "扫描自写包目录（递归查找 PKGBUILD）: $PACKAGES_ROOT"
+declare -A _seen_dirs
+# 使用 -print0 读取 null 分隔，防止空格/特殊字符路径问题
+while IFS= read -r -d '' pkgb; do
+  dir="$(dirname "$pkgb")"
+  # 去重：同一目录只编译一次
+  if [[ -n "${_seen_dirs[$dir]:-}" ]]; then
+    continue
+  fi
+  _seen_dirs["$dir"]=1
+
+  # 跳过 /opt/packages 根本身（极少见，但以防万一）
+  [[ "$dir" == "$PACKAGES_ROOT" ]] && continue
+
+  echo "==> 编译自写包目录: $dir"
+  chown -R builder:builder "$dir"
+  if ! sudo -u builder bash -lc "cd '$dir' && makepkg -si --noconfirm --skipinteg"; then
+    warn "编译失败: $dir"
+    continue
+  fi
+
+  shopt -s nullglob
+  any=false
+  for f in "$dir"/*.pkg.tar.zst; do
+    cp -v "$f" "$UPLOAD_DIR"/ || true
+    any=true
+  done
+  if [[ "$any" = false ]]; then
+    warn "未在 $dir 找到 *.pkg.tar.zst"
+  fi
+done < <(find "$PACKAGES_ROOT" -type f -name 'PKGBUILD' -print0 2>/dev/null)
+
 # 再次放宽 upload 目录权限
 chmod -R 777 "$UPLOAD_DIR" || true
 
