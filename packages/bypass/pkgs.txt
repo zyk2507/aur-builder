@@ -1,0 +1,8 @@
+yay-git
+clash-geoip
+mihomo
+sing-box
+xray
+v2ray
+v2rayn
+nexttrace
