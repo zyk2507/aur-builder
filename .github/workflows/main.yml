@@ -1,4 +1,4 @@
-name: Build AUR in Docker, Archive & Release
+name: Build AUR (multi pkgs groups), Archive & Release
 
 on:
   push:
@@ -19,39 +19,78 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 可选：更快的构建缓存
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
+      - name: Ensure upload folder exists
         run: |
-          docker build -t aur-builder:latest .
+          mkdir -p "${{ github.workspace }}/upload"
 
-      - name: Run AUR builder container
+      - name: Discover package groups (subfolders with pkgs.txt)
+        id: discover
+        shell: bash
         run: |
-          # 将仓库内的 upload/ 与 packages/ 挂载到容器
-          docker run --rm \
-            -v "${{ github.workspace }}/upload:/opt/upload" \
-            -v "${{ github.workspace }}/packages:/opt/packages" \
-            aur-builder:latest
+          set -euo pipefail
+          ROOT="${{ github.workspace }}/packages"
+          if [[ ! -d "$ROOT" ]]; then
+            echo "ERROR: packages/ 不存在"
+            exit 1
+          fi
+
+          # 找出 packages/ 下含 pkgs.txt 的子目录（一级或更深层级都可）
+          mapfile -t groups < <(find "$ROOT" -type f -name 'pkgs.txt' -printf '%h\n' | sort -u)
+          if [[ "${#groups[@]}" -eq 0 ]]; then
+            echo "ERROR: 未在 packages/ 下找到任何包含 pkgs.txt 的子目录"
+            exit 1
+          fi
+
+          printf '发现以下包组目录：\n'
+          printf ' - %s\n' "${groups[@]}"
+
+          # 以 :: 分隔拼接，传给后续步骤
+          echo "GROUPS=$(printf '%s::' "${groups[@]}")" >> "$GITHUB_ENV"
 
       - name: Install 7-Zip
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
-      - name: Compress upload/ (single first, then maybe multi-volume)
+      - name: Loop build per group (rebuild image each time)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS='::' read -ra GROUPS <<< "${GROUPS:-}"
+
+          # 逐个子目录处理：删除上个镜像 -> 重新构建 -> 运行容器（仅挂载该子目录）
+          for g in "${GROUPS[@]}"; do
+            [[ -z "$g" ]] && continue
+            echo "=============================="
+            echo "==> 处理包组目录: $g"
+            echo "=============================="
+
+            # 删除上一个镜像（若存在）
+            docker rmi -f aur-builder:latest || true
+
+            # 重新构建镜像（可用 --no-cache 保证完全干净）
+            docker build --no-cache -t aur-builder:latest .
+
+            # 运行容器：仅挂载当前包组目录为 /opt/packages
+            docker run --rm \
+              -v "${{ github.workspace }}/upload:/opt/upload" \
+              -v "$g:/opt/packages" \
+              aur-builder:latest
+
+          done
+
+      - name: Compress upload/ (single first; only split if >1.9GB)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
 
-          if [ ! -d "upload" ]; then
+          if [[ ! -d "upload" ]]; then
             echo "ERROR: upload/ not found"
             exit 1
           fi
 
-          # 先生成单一 7z 包；打整个目录，保证即便为空也能打包成功
+          # 先生成单一 7z 包；打整个目录，避免空目录异常
           7z a -mx=9 -mmt=on "upload.7z" "./upload" >/dev/null
 
           BYTES=$(stat -c%s "upload.7z")
@@ -62,10 +101,10 @@ jobs:
 
           if [ "${BYTES}" -gt "${THRESHOLD}" ]; then
             echo "is_split=true" >> "$GITHUB_ENV"
-            # 改用原生 7z 多卷（每卷 1900MB）
+            # 用原生 7z 多卷重新打包（每卷 1900MB）
             rm -f upload.7z
             7z a -mx=9 -mmt=on -v1900m "upload.7z" "./upload" >/dev/null
-            # 结果：upload.7z.001, upload.7z.002, ...
+            # 产物示例：upload.7z.001, upload.7z.002, ...
             echo "RELEASE_FILES=upload.7z.*" >> "$GITHUB_ENV"
           else
             echo "is_split=false" >> "$GITHUB_ENV"
@@ -90,17 +129,16 @@ jobs:
           draft: false
           prerelease: false
           make_latest: true
-          # 若你担心通配未命中导致失败，可设为 false
           fail_on_unmatched_files: true
 
-      # 可选：将同一输出作为工作流 Artifact 保存，便于在 Actions 页直接下载
+      # 可选：把同样的输出也保存成工作流 Artifact
       - name: Upload artifact (single)
         if: env.is_split == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: upload-archive
           path: upload.7z
-          compression-level: 0  # 已压缩，不再二次压缩
+          compression-level: 0
 
       - name: Upload artifact (multi-volume)
         if: env.is_split == 'true'
