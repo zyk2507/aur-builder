@@ -4,9 +4,6 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-  schedule:
-    # 每天 18:30 UTC 触发（= 次日 02:30 Asia/Singapore）
-    - cron: '30 18 * * *'
 
 permissions:
   contents: write  # 创建/更新 Release 与上传资产
